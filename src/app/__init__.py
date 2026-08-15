@@ -1,0 +1,1 @@
+"""BookSearch application package."""
