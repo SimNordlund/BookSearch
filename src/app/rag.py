@@ -10,6 +10,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sqlalchemy import create_engine, text
 
 from app.config import Settings
+from app.judge import RAGJudge
 from app.schemas import Book, ChatResponse, SourceChunk
 
 
@@ -31,6 +32,7 @@ class RAGService:
             api_key=settings.openai_api_key,
             temperature=0,
         )
+        self.judge = RAGJudge(settings)
         self.prompt = ChatPromptTemplate.from_messages(
             [
                 (
@@ -125,7 +127,13 @@ When you use an excerpt, cite its book filename and page number in your answer."
                 },
             )
 
-    def answer(self, question: str, book: str | None, top_k: int | None) -> ChatResponse:
+    def answer(
+        self,
+        question: str,
+        book: str | None,
+        top_k: int | None,
+        evaluate: bool,
+    ) -> ChatResponse:
         search_filter = {"book": {"$eq": book}} if book else None
         documents_with_scores = self._store.similarity_search_with_score(
             question,
@@ -147,17 +155,21 @@ When you use an excerpt, cite its book filename and page number in your answer."
         )
         answer = response.content if isinstance(response.content, str) else str(response.content)
 
+        sources = [
+            SourceChunk(
+                book=document.metadata["book"],
+                page=document.metadata.get("page"),
+                excerpt=document.page_content[:500],
+                relevance_score=float(score),
+            )
+            for document, score in documents_with_scores
+        ]
+        evaluation = self.judge.evaluate(question, answer, sources) if evaluate else None
+
         return ChatResponse(
             answer=answer,
-            sources=[
-                SourceChunk(
-                    book=document.metadata["book"],
-                    page=document.metadata.get("page"),
-                    excerpt=document.page_content[:500],
-                    relevance_score=float(score),
-                )
-                for document, score in documents_with_scores
-            ],
+            sources=sources,
+            evaluation=evaluation,
         )
 
     def list_books(self) -> list[Book]:

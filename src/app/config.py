@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     openai_api_key: str
     database_url: str = "postgresql+psycopg://booksearch:booksearch@localhost:5432/booksearch"
     chat_model: str = "gpt-4.1-mini"
+    judge_model: str = "gpt-4.1-mini"
     embedding_model: str = "text-embedding-3-small"
     pdf_directory: Path = Path("data/pdfs")
     chunk_size: int = 1000

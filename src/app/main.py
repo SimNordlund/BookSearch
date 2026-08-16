@@ -5,7 +5,8 @@ from fastapi import FastAPI, HTTPException, Request
 
 from app.config import Settings
 from app.rag import RAGService
-from app.schemas import Book, ChatRequest, ChatResponse
+from app.schemas import AnswerEvaluation, Book, ChatRequest, ChatResponse, JudgeRequest
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -37,6 +38,20 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
             question=payload.question,
             book=payload.book,
             top_k=payload.top_k,
+            evaluate=payload.evaluate,
         )
     except Exception as error:
         raise HTTPException(status_code=500, detail="Unable to answer the question.") from error
+
+
+@app.post("/evaluate", response_model=AnswerEvaluation)
+def evaluate(payload: JudgeRequest, request: Request) -> AnswerEvaluation:
+    """Evaluate a supplied RAG answer against its retrieved source passages."""
+    try:
+        return request.app.state.rag_service.judge.evaluate(
+            question=payload.question,
+            answer=payload.answer,
+            sources=payload.sources,
+        )
+    except Exception as error:
+        raise HTTPException(status_code=500, detail="Unable to evaluate the answer.") from error
