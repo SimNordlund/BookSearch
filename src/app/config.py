@@ -10,8 +10,24 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://booksearch:booksearch@localhost:5432/booksearch"
     chat_model: str = "gpt-4.1-mini"
     judge_model: str = "gpt-4.1-mini"
+    query_rewrite_enabled: bool = True
+    query_rewrite_model: str = "gpt-4.1-mini"
     embedding_model: str = "text-embedding-3-small"
+    #text-embedding-3-large <-- Bättre för böcker
     pdf_directory: Path = Path("data/pdfs")
     chunk_size: int = 1000
     chunk_overlap: int = 150
     retrieval_k: int = 5
+    
+    
+    ##Reranking
+    ##Bättre chunking + metadata
+    ##Hybridsökning (embedding + BM25) + RRF
+    ##Query rewriting 
+    
+##1.  Eval-frågor + mätning
+##2. Hybrid search
+##3. Reranking
+##4. Bättre chunking/kapitelmetadata
+##5. text-embedding-3-large
+##6. Parent-child retrieval eller HyDE

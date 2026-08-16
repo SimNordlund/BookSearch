@@ -11,6 +11,7 @@ from sqlalchemy import create_engine, text
 
 from app.config import Settings
 from app.judge import RAGJudge
+from app.query_rewriter import QueryRewriter
 from app.schemas import Book, ChatResponse, SourceChunk
 
 
@@ -33,6 +34,9 @@ class RAGService:
             temperature=0,
         )
         self.judge = RAGJudge(settings)
+        self.query_rewriter = (
+            QueryRewriter(settings) if settings.query_rewrite_enabled else None
+        )
         self.prompt = ChatPromptTemplate.from_messages(
             [
                 (
@@ -134,12 +138,7 @@ When you use an excerpt, cite its book filename and page number in your answer."
         top_k: int | None,
         evaluate: bool,
     ) -> ChatResponse:
-        search_filter = {"book": {"$eq": book}} if book else None
-        documents_with_scores = self._store.similarity_search_with_score(
-            question,
-            k=top_k or self.settings.retrieval_k,
-            filter=search_filter,
-        )
+        documents_with_scores = self._retrieve(question, book, top_k)
         if not documents_with_scores:
             scope = f" in '{book}'" if book else ""
             return ChatResponse(
@@ -189,6 +188,43 @@ When you use an excerpt, cite its book filename and page number in your answer."
             for row in rows
         ]
 
+    def _retrieve(
+        self,
+        question: str,
+        book: str | None,
+        top_k: int | None,
+    ) -> list[tuple[Document, float]]:
+        """Search query variants and combine their rankings with reciprocal rank fusion."""
+        limit = top_k or self.settings.retrieval_k
+        search_filter = {"book": {"$eq": book}} if book else None
+        queries = (
+            self.query_rewriter.rewrite(question)
+            if self.query_rewriter is not None
+            else [question]
+        )
+        fused_results: dict[str, tuple[Document, float]] = {}
+
+        for query in queries:
+            candidates = self._store.similarity_search_with_score(
+                query,
+                k=max(limit, 8),
+                filter=search_filter,
+            )
+            for rank, (document, _) in enumerate(candidates, start=1):
+                key = self._document_key(document)
+                existing = fused_results.get(key)
+                rrf_score = 1 / (60 + rank)
+                if existing is None:
+                    fused_results[key] = (document, rrf_score)
+                else:
+                    fused_results[key] = (existing[0], existing[1] + rrf_score)
+
+        return sorted(
+            fused_results.values(),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:limit]
+
     @property
     def _store(self) -> PGVector:
         if self.vector_store is None:
@@ -207,3 +243,13 @@ When you use an excerpt, cite its book filename and page number in your answer."
     def _format_document(document: Document) -> str:
         page = document.metadata.get("page", "unknown")
         return f"[Book: {document.metadata['book']}, page: {page}]\n{document.page_content}"
+
+    @staticmethod
+    def _document_key(document: Document) -> str:
+        return "|".join(
+            [
+                document.metadata.get("book", ""),
+                str(document.metadata.get("page", "")),
+                hashlib.sha256(document.page_content.encode("utf-8")).hexdigest(),
+            ]
+        )
