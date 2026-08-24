@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     judge_model: str = "gpt-4.1-mini"
     query_rewrite_enabled: bool = True
     query_rewrite_model: str = "gpt-4.1-mini"
+    rerank_enabled: bool = True
+    rerank_model: str = "gpt-4.1-mini"
+    rerank_candidate_count: int = 20
     embedding_model: str = "text-embedding-3-small"
     #text-embedding-3-large <-- Bättre för böcker
     pdf_directory: Path = Path("data/pdfs")

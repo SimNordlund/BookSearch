@@ -12,6 +12,7 @@ from sqlalchemy import create_engine, text
 from app.config import Settings
 from app.judge import RAGJudge
 from app.query_rewriter import QueryRewriter
+from app.reranker import RAGReranker
 from app.schemas import Book, ChatResponse, SourceChunk
 
 
@@ -37,6 +38,7 @@ class RAGService:
         self.query_rewriter = (
             QueryRewriter(settings) if settings.query_rewrite_enabled else None
         )
+        self.reranker = RAGReranker(settings) if settings.rerank_enabled else None
         self.prompt = ChatPromptTemplate.from_messages(
             [
                 (
@@ -194,8 +196,13 @@ When you use an excerpt, cite its book filename and page number in your answer."
         book: str | None,
         top_k: int | None,
     ) -> list[tuple[Document, float]]:
-        """Search query variants and combine their rankings with reciprocal rank fusion."""
+        """Search query variants, fuse candidates, then optionally rerank them."""
         limit = top_k or self.settings.retrieval_k
+        candidate_limit = (
+            max(limit, self.settings.rerank_candidate_count)
+            if self.reranker is not None
+            else limit
+        )
         search_filter = {"book": {"$eq": book}} if book else None
         queries = (
             self.query_rewriter.rewrite(question)
@@ -207,7 +214,7 @@ When you use an excerpt, cite its book filename and page number in your answer."
         for query in queries:
             candidates = self._store.similarity_search_with_score(
                 query,
-                k=max(limit, 8),
+                k=max(candidate_limit, 8),
                 filter=search_filter,
             )
             for rank, (document, _) in enumerate(candidates, start=1):
@@ -219,11 +226,14 @@ When you use an excerpt, cite its book filename and page number in your answer."
                 else:
                     fused_results[key] = (existing[0], existing[1] + rrf_score)
 
-        return sorted(
+        fused_candidates = sorted(
             fused_results.values(),
             key=lambda item: item[1],
             reverse=True,
-        )[:limit]
+        )[:candidate_limit]
+        if self.reranker is not None:
+            return self.reranker.rerank(question, fused_candidates, limit)
+        return fused_candidates[:limit]
 
     @property
     def _store(self) -> PGVector:
