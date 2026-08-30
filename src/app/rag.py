@@ -11,6 +11,7 @@ from sqlalchemy import create_engine, text
 
 from app.config import Settings
 from app.judge import RAGJudge
+from app.lexical_search import LexicalSearch
 from app.query_rewriter import QueryRewriter
 from app.reranker import RAGReranker
 from app.schemas import Book, ChatResponse, SourceChunk
@@ -39,6 +40,11 @@ class RAGService:
             QueryRewriter(settings) if settings.query_rewrite_enabled else None
         )
         self.reranker = RAGReranker(settings) if settings.rerank_enabled else None
+        self.lexical_search = (
+            LexicalSearch(self.engine, settings.lexical_search_config)
+            if settings.lexical_search_enabled
+            else None
+        )
         self.prompt = ChatPromptTemplate.from_messages(
             [
                 (
@@ -76,6 +82,8 @@ When you use an excerpt, cite its book filename and page number in your answer."
             use_jsonb=True,
             create_extension=False,
         )
+        if self.lexical_search is not None:
+            self.lexical_search.initialize()
 
         for pdf_path in sorted(self.settings.pdf_directory.glob("*.pdf")):
             self._ingest_if_changed(pdf_path)
@@ -92,20 +100,17 @@ When you use an excerpt, cite its book filename and page number in your answer."
             ).mappings().first()
 
         if row and row["content_sha256"] == digest:
+            if self.lexical_search is not None and not self.lexical_search.is_indexed(
+                pdf_path.name, digest
+            ):
+                self.lexical_search.replace_book(
+                    pdf_path.name,
+                    self._load_chunks(pdf_path, digest),
+                    digest,
+                )
             return
 
-        documents = PyPDFLoader(str(pdf_path)).load()
-        chunks = RecursiveCharacterTextSplitter(
-            chunk_size=self.settings.chunk_size,
-            chunk_overlap=self.settings.chunk_overlap,
-        ).split_documents(documents)
-
-        for chunk in chunks:
-            chunk.metadata["book"] = pdf_path.name
-            chunk.metadata["content_sha256"] = digest
-            # PyPDFLoader uses a zero-based page value; expose a human page number.
-            if "page" in chunk.metadata:
-                chunk.metadata["page"] = int(chunk.metadata["page"]) + 1
+        chunks = self._load_chunks(pdf_path, digest)
 
         # Replacing a file removes its former chunks before storing the new version.
         if row:
@@ -113,6 +118,10 @@ When you use an excerpt, cite its book filename and page number in your answer."
 
         if chunks:
             self._store.add_documents(chunks)
+            if self.lexical_search is not None:
+                self.lexical_search.replace_book(pdf_path.name, chunks, digest)
+        elif self.lexical_search is not None:
+            self.lexical_search.replace_book(pdf_path.name, chunks, digest)
 
         with self.engine.begin() as connection:
             connection.execute(
@@ -132,6 +141,21 @@ When you use an excerpt, cite its book filename and page number in your answer."
                     "chunk_count": len(chunks),
                 },
             )
+
+    def _load_chunks(self, pdf_path: Path, digest: str) -> list[Document]:
+        documents = PyPDFLoader(str(pdf_path)).load()
+        chunks = RecursiveCharacterTextSplitter(
+            chunk_size=self.settings.chunk_size,
+            chunk_overlap=self.settings.chunk_overlap,
+        ).split_documents(documents)
+
+        for chunk in chunks:
+            chunk.metadata["book"] = pdf_path.name
+            chunk.metadata["content_sha256"] = digest
+            # PyPDFLoader uses a zero-based page value; expose a human page number.
+            if "page" in chunk.metadata:
+                chunk.metadata["page"] = int(chunk.metadata["page"]) + 1
+        return chunks
 
     def answer(
         self,
@@ -217,14 +241,15 @@ When you use an excerpt, cite its book filename and page number in your answer."
                 k=max(candidate_limit, 8),
                 filter=search_filter,
             )
-            for rank, (document, _) in enumerate(candidates, start=1):
-                key = self._document_key(document)
-                existing = fused_results.get(key)
-                rrf_score = 1 / (60 + rank)
-                if existing is None:
-                    fused_results[key] = (document, rrf_score)
-                else:
-                    fused_results[key] = (existing[0], existing[1] + rrf_score)
+            self._add_rrf_scores(fused_results, candidates)
+
+        if self.lexical_search is not None:
+            lexical_candidates = self.lexical_search.search(
+                question,
+                book,
+                candidate_limit,
+            )
+            self._add_rrf_scores(fused_results, lexical_candidates)
 
         fused_candidates = sorted(
             fused_results.values(),
@@ -263,3 +288,18 @@ When you use an excerpt, cite its book filename and page number in your answer."
                 hashlib.sha256(document.page_content.encode("utf-8")).hexdigest(),
             ]
         )
+
+    def _add_rrf_scores(
+        self,
+        fused_results: dict[str, tuple[Document, float]],
+        candidates: list[tuple[Document, float]],
+    ) -> None:
+        """Add one ranked retrieval list to a Reciprocal Rank Fusion result set."""
+        for rank, (document, _) in enumerate(candidates, start=1):
+            key = self._document_key(document)
+            existing = fused_results.get(key)
+            rrf_score = 1 / (60 + rank)
+            if existing is None:
+                fused_results[key] = (document, rrf_score)
+            else:
+                fused_results[key] = (existing[0], existing[1] + rrf_score)

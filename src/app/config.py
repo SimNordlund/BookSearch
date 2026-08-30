@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -15,6 +16,8 @@ class Settings(BaseSettings):
     rerank_enabled: bool = True
     rerank_model: str = "gpt-4.1-mini"
     rerank_candidate_count: int = 20
+    lexical_search_enabled: bool = True
+    lexical_search_config: Literal["simple", "swedish", "english"] = "simple"
     embedding_model: str = "text-embedding-3-small"
     #text-embedding-3-large <-- Bättre för böcker
     pdf_directory: Path = Path("data/pdfs")
