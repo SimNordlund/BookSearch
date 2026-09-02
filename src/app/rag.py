@@ -15,6 +15,7 @@ from app.lexical_search import LexicalSearch
 from app.query_rewriter import QueryRewriter
 from app.reranker import RAGReranker
 from app.schemas import Book, ChatResponse, SourceChunk
+from app.workflow import RAGWorkflow
 
 
 class RAGService:
@@ -56,6 +57,7 @@ When you use an excerpt, cite its book filename and page number in your answer."
                 ("human", "Book excerpts:\n{context}\n\nQuestion: {question}"),
             ]
         )
+        self.workflow = RAGWorkflow(self)
 
     def initialize(self) -> None:
         """Create support tables and ingest PDFs that are new or changed."""
@@ -164,12 +166,20 @@ When you use an excerpt, cite its book filename and page number in your answer."
         top_k: int | None,
         evaluate: bool,
     ) -> ChatResponse:
-        documents_with_scores = self._retrieve(question, book, top_k)
+        """Run the LangGraph RAG workflow for one user question."""
+        return self.workflow.invoke(question, book, top_k, evaluate)
+
+    def _generate_answer(
+        self,
+        question: str,
+        documents_with_scores: list[tuple[Document, float]],
+        book: str | None,
+    ) -> tuple[str, list[SourceChunk]]:
         if not documents_with_scores:
             scope = f" in '{book}'" if book else ""
-            return ChatResponse(
-                answer=f"I could not find any indexed passages{scope} to answer that question.",
-                sources=[],
+            return (
+                f"I could not find any indexed passages{scope} to answer that question.",
+                [],
             )
 
         context = "\n\n".join(
@@ -189,13 +199,7 @@ When you use an excerpt, cite its book filename and page number in your answer."
             )
             for document, score in documents_with_scores
         ]
-        evaluation = self.judge.evaluate(question, answer, sources) if evaluate else None
-
-        return ChatResponse(
-            answer=answer,
-            sources=sources,
-            evaluation=evaluation,
-        )
+        return answer, sources
 
     def list_books(self) -> list[Book]:
         with self.engine.connect() as connection:

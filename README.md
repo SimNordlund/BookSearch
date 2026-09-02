@@ -16,6 +16,11 @@ Läsarfråga
   → AI-as-judge (valfritt)
 ```
 
+LangGraph orkestrerar de tre sista huvudstegen: `retrieve` → `generate_answer` →
+`judge` (endast när `evaluate: true`). Query rewrite, hybrid search, RRF och
+reranking ligger kvar inuti retrieve-noden. Det gör flödet tydligt och ger en bra
+grund om du senare vill lägga till exempelvis retry- eller granskningssteg.
+
 ### 1. PDF-ingestering
 
 När API:t startar läser det PDF:er i `data/pdfs` med LangChain. Varje sida delas upp i överlappande chunks. Chunks sparas med boknamn, sida och en OpenAI-embedding i pgvector.
@@ -66,6 +71,7 @@ data/pdfs/          PDF-böcker att indexera
 database/setup.sql  Aktiverar pgvector i den lokala databasen
 src/app/main.py     FastAPI-endpoints
 src/app/rag.py      Ingestering, pgvector-sökning och RRF
+src/app/workflow.py LangGraph-noder och flöde
 src/app/query_rewriter.py  Sökfrågevarianter
 src/app/lexical_search.py  PostgreSQL fulltextsökning
 src/app/reranker.py        Reranker efter RRF
